@@ -118,6 +118,9 @@ components:
         - $ref: '#/components/schemas/WorkspaceFolders'
         # Diagnostics
         - $ref: '#/components/schemas/AgentDiagnostics'
+        # Rooms (standalone: one room per iTerm2 window)
+        - $ref: '#/components/schemas/AgentRoom'
+        - $ref: '#/components/schemas/RoomsInfo'
       discriminator: type
 
     ClientMessage:
@@ -144,6 +147,7 @@ components:
         - $ref: '#/components/schemas/SaveAreaMappings'
         - $ref: '#/components/schemas/SetShowAreas'
         - $ref: '#/components/schemas/RequestDiagnostics'
+        - $ref: '#/components/schemas/RenameRoom'
       discriminator: type
 
     # ── Server message variants ────────────────────────────────────
@@ -182,6 +186,9 @@ components:
           type: integer
         folderName:
           type: string
+        roomLabel:
+          type: string
+          description: Area label of the agent's room (standalone room-per-window).
         isExternal:
           type: boolean
         palette:
@@ -242,6 +249,58 @@ components:
           description: Map of agent ID (string) to external flag.
           additionalProperties:
             type: boolean
+        roomLabels:
+          type: object
+          description: Map of agent ID (string) to room area label (standalone room-per-window).
+          additionalProperties:
+            type: string
+
+    AgentRoom:
+      description: |
+        An agent's room changed (standalone). The client reseats the character
+        into the new room's seats and confines its wandering there.
+      type: object
+      additionalProperties: false
+      required: [type, id, roomLabel]
+      properties:
+        type:
+          const: agentRoom
+        id:
+          type: integer
+        roomLabel:
+          type: string
+          description: Area label of the agent's room.
+
+    RoomsInfo:
+      description: |
+        The current set of rooms and their display names (standalone room-per-window).
+        Sent on connect and whenever rooms are added, removed, or renamed.
+      type: object
+      additionalProperties: false
+      required: [type, rooms]
+      properties:
+        type:
+          const: roomsInfo
+        rooms:
+          type: array
+          items:
+            $ref: '#/components/schemas/RoomInfoEntry'
+
+    RoomInfoEntry:
+      type: object
+      additionalProperties: false
+      required: [label, name, centerCol, centerRow]
+      properties:
+        label:
+          type: string
+          description: Stable room area label (FK into areaTiles).
+        name:
+          type: string
+          description: User-facing room name shown over the room.
+        centerCol:
+          type: integer
+        centerRow:
+          type: integer
 
     AgentStatus:
       description: Active vs waiting state for an agent (drives character animation).
@@ -1063,6 +1122,23 @@ components:
       properties:
         type:
           const: requestDiagnostics
+
+    RenameRoom:
+      description: |
+        Rename a room (standalone room-per-window). The server persists the name
+        keyed by the room's window and re-broadcasts roomsInfo.
+      type: object
+      additionalProperties: false
+      required: [type, label, name]
+      properties:
+        type:
+          const: renameRoom
+        label:
+          type: string
+          description: Stable room area label to rename.
+        name:
+          type: string
+          description: New display name.
 
     # ── Supporting schemas ─────────────────────────────────────────
 

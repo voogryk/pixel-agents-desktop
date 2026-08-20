@@ -294,9 +294,11 @@ async function main(): Promise<void> {
     }
 
     // Discover every live Claude process on the machine — across all projects,
-    // regardless of the launch cwd or transcript mtime — so idle sessions still
-    // get a character, each labeled with its own session name.
-    runtime.startRegistryScanning();
+    // regardless of the launch cwd or transcript mtime — and place each in a
+    // room per iTerm2 window (falling back to a single "Other" room off macOS /
+    // outside iTerm2). This drives session adoption internally, so it replaces
+    // the plain registry scan.
+    runtime.startRoomScanning();
 
     // The URL the operator opens has to be REACHABLE (a wildcard bind address
     // is a bind target, not an address you can browse to — `--host 0.0.0.0`

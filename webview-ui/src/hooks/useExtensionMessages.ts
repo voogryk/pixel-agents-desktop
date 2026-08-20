@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import type { HooksConsentRequest } from '../../../core/src/messages.js';
+import type { HooksConsentRequest, RoomInfoEntry } from '../../../core/src/messages.js';
 import { playDoneSound, playPermissionSound, setSoundEnabled } from '../notificationSound.js';
 import type { ExistingAgentMeta, PendingAgent } from '../office/engine/existingAgents.js';
 import { reconcileExistingAgents } from '../office/engine/existingAgents.js';
@@ -32,6 +32,9 @@ import { transport } from '../transport/index.js';
  */
 const isHeadlessAgent = (isExternal: boolean | undefined): boolean =>
   isExternal === true && !isBrowserRuntime;
+
+/** A room and its display name/center, for the room-name overlay + rename UI. */
+export type RoomInfo = RoomInfoEntry;
 
 export interface SubagentCharacter {
   id: number;
@@ -86,6 +89,7 @@ interface ExtensionMessageState {
   extensionVersion: string;
   watchAllSessions: boolean;
   setWatchAllSessions: (v: boolean) => void;
+  rooms: RoomInfo[];
   alwaysShowLabels: boolean;
   ghostHeadlessAgents: boolean;
   setGhostHeadlessAgents: (v: boolean) => void;
@@ -140,6 +144,7 @@ export function useExtensionMessages(
   const [lastSeenVersion, setLastSeenVersion] = useState('');
   const [extensionVersion, setExtensionVersion] = useState('');
   const [watchAllSessions, setWatchAllSessions] = useState(false);
+  const [rooms, setRooms] = useState<RoomInfo[]>([]);
   const [alwaysShowLabels, setAlwaysShowLabels] = useState(false);
   const [ghostHeadlessAgents, setGhostHeadlessAgentsState] = useState(false);
   const [hooksEnabled, setHooksEnabled] = useState(true);
@@ -232,7 +237,16 @@ export function useExtensionMessages(
         }
         // Add buffered agents now that layout (and seats) are correct
         for (const p of pendingAgents) {
-          os.addAgent(p.id, p.palette, p.hueShift, p.seatId, true, p.folderName);
+          os.addAgent(
+            p.id,
+            p.palette,
+            p.hueShift,
+            p.seatId,
+            true,
+            p.folderName,
+            undefined,
+            p.roomLabel,
+          );
           if (p.isHeadless) os.setHeadless(p.id, true);
         }
         pendingAgents = [];
@@ -283,7 +297,17 @@ export function useExtensionMessages(
         } else {
           const palette = msg.palette as number | undefined;
           const hueShift = msg.hueShift as number | undefined;
-          os.addAgent(id, palette, hueShift, undefined, undefined, folderName);
+          const roomLabel = msg.roomLabel as string | undefined;
+          os.addAgent(
+            id,
+            palette,
+            hueShift,
+            undefined,
+            undefined,
+            folderName,
+            undefined,
+            roomLabel,
+          );
           noteFolderName(folderName);
           if (isHeadlessAgent(msg.isExternal as boolean | undefined)) {
             os.setHeadless(id, true);
@@ -322,6 +346,7 @@ export function useExtensionMessages(
         const meta = (msg.agentMeta || {}) as Record<number, ExistingAgentMeta>;
         const folderNames = (msg.folderNames || {}) as Record<number, string>;
         const externalAgents = (msg.externalAgents || {}) as Record<number, boolean>;
+        const roomLabels = (msg.roomLabels || {}) as Record<number, string>;
         const headlessAgents: Record<number, boolean> = {};
         for (const id of incoming) {
           noteFolderName(folderNames[id]);
@@ -340,6 +365,7 @@ export function useExtensionMessages(
             layoutReadyRef.current,
             pendingAgents,
             headlessAgents,
+            roomLabels,
           )
         ) {
           saveAgentSeats(os);
@@ -735,6 +761,10 @@ export function useExtensionMessages(
       } else if (msg.type === 'agentContextUsage') {
         const id = msg.id as number;
         os.setAgentContext(id, msg.contextTokens as number, msg.maxContextTokens as number);
+      } else if (msg.type === 'agentRoom') {
+        os.setAgentRoom(msg.id as number, msg.roomLabel as string);
+      } else if (msg.type === 'roomsInfo') {
+        setRooms((msg.rooms || []) as RoomInfo[]);
       }
     };
     const unsubscribe = transport.onMessage(handler);
@@ -775,6 +805,7 @@ export function useExtensionMessages(
     extensionVersion,
     watchAllSessions,
     setWatchAllSessions,
+    rooms,
     alwaysShowLabels,
     ghostHeadlessAgents,
     setGhostHeadlessAgents: applyGhostHeadlessAgents,

@@ -275,6 +275,15 @@ export function handleClientMessage(
       break;
     }
 
+    case 'renameRoom': {
+      const label = msg.label as string;
+      const name = msg.name as string;
+      if (typeof label === 'string' && typeof name === 'string' && name.trim()) {
+        runtime?.renameRoom(label, name.trim());
+      }
+      break;
+    }
+
     case 'focusAgent': {
       // No terminal handle to `.show()` here, so jump to the tab that hosts the
       // session instead (macOS + iTerm2 for now, see terminalFocus.ts). Gated
@@ -511,6 +520,7 @@ function handleWebviewReady(send: WsSend, ctx: ClientMessageContext): void {
   const agentIds: number[] = [];
   const folderNames: Record<number, string> = {};
   const externalAgents: Record<number, boolean> = {};
+  const roomLabels: Record<number, string> = {};
   const persistedSeats = adapter?.loadSeats() ?? {};
   const agentMeta: Record<number, { palette?: number; hueShift?: number; seatId?: string }> = {};
   for (const [id, agent] of store) {
@@ -520,6 +530,9 @@ function handleWebviewReady(send: WsSend, ctx: ClientMessageContext): void {
     }
     if (agent.isExternal) {
       externalAgents[id] = true;
+    }
+    if (agent.roomLabel) {
+      roomLabels[id] = agent.roomLabel;
     }
     const persisted = persistedSeats[String(id)];
     agentMeta[id] = {
@@ -534,12 +547,25 @@ function handleWebviewReady(send: WsSend, ctx: ClientMessageContext): void {
     agentMeta,
     folderNames,
     externalAgents,
+    roomLabels,
   });
 
   // 7. Layout last (see step 3): flushes the webview's buffered existingAgents
-  // into characters once seats are rebuilt.
+  // into characters once seats are rebuilt. In standalone the generated
+  // room-per-window layout is authoritative; the saved/default layout is only a
+  // fallback for the brief window before the first topology scan completes.
+  const roomLayout = runtime?.getRoomLayout();
   const savedLayout = readLayoutFromFile();
-  send({ type: 'layoutLoaded', layout: savedLayout ?? cache?.defaultLayout ?? null });
+  send({
+    type: 'layoutLoaded',
+    layout: roomLayout ?? savedLayout ?? cache?.defaultLayout ?? null,
+  });
+
+  // 7b. Room names, so the client can label each room.
+  const roomsInfo = runtime?.getRoomsInfo();
+  if (roomsInfo && roomsInfo.length > 0) {
+    send({ type: 'roomsInfo', rooms: roomsInfo });
+  }
 
   // 8. Agent state, AFTER layoutLoaded -- the characters they target only
   // exist once the layout flush creates them. Without this a reconnecting

@@ -1074,6 +1074,10 @@ export function adoptExternalSessionFromHook(
    *  workspace-folder / dashed-basename. The registry scanner passes the live
    *  session's name here so the office shows "medivet-c6", not the cwd. */
   folderNameOverride?: string,
+  /** Standalone room-per-window: the area label of the agent's room, set on the
+   *  agent before its agentCreated broadcast so the client seats it correctly on
+   *  first appearance. */
+  roomLabel?: string,
 ): void {
   if (transcriptPath) {
     // File-based provider (Claude, Codex): adopt with JSONL file watching
@@ -1104,6 +1108,7 @@ export function adoptExternalSessionFromHook(
       permissionTimers,
       persistAgents,
       folderName,
+      roomLabel,
     );
 
     const adoptedAgent = [...agents.values()].find((a) => pathsMatch(a.jsonlFile, transcriptPath));
@@ -1172,6 +1177,7 @@ function adoptExternalSession(
 
   persistAgents: () => void,
   folderName?: string,
+  roomLabel?: string,
 ): void {
   const id = nextAgentIdRef.current++;
   // Decide whether to replay the existing file content or skip to its end.
@@ -1226,6 +1232,7 @@ function adoptExternalSession(
     linesProcessed: 0,
     seenUnknownRecordTypes: new Set(),
     folderName,
+    roomLabel,
     contextTokens: 0,
     maxContextTokens: DEFAULT_MAX_CONTEXT_TOKENS,
   };

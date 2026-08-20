@@ -3,6 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 
 import { CONFIG_FILE_NAME, LAYOUT_FILE_DIR } from './constants.js';
+import type { RoomEntry, RoomRegistry } from './roomRegistry.js';
 
 export interface AdapterSettings {
   soundEnabled: boolean;
@@ -53,6 +54,10 @@ export interface PixelAgentsConfig {
   /** Per-provider hooks preference, machine-global for the same reason as the
    *  consent above. A provider absent from the map takes the default (true). */
   hooksEnabled: Record<string, boolean>;
+  /** Standalone room registry: iTerm2-window-key → {slot, name}. Persists room
+   *  names + slot assignments across restarts so a renamed room keeps its name.
+   *  See roomRegistry.ts. */
+  rooms: RoomRegistry;
 }
 
 const DEFAULT_ADAPTER_SETTINGS: AdapterSettings = {
@@ -77,6 +82,26 @@ function parseHooksConsent(raw: unknown): Record<string, HooksConsentState> {
   const out: Record<string, HooksConsentState> = {};
   for (const [providerId, state] of Object.entries(raw as Record<string, unknown>)) {
     if (state === 'granted' || state === 'declined') out[providerId] = state;
+  }
+  return out;
+}
+
+/** Coerce a loose object into a RoomRegistry, dropping entries whose value is
+ *  not `{slot:number, name:string}`. Guards a hand-edited / older config. */
+function parseRooms(raw: unknown): RoomRegistry {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const out: RoomRegistry = {};
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (!value || typeof value !== 'object') continue;
+    const { slot, name } = value as Partial<RoomEntry>;
+    if (
+      typeof slot === 'number' &&
+      Number.isInteger(slot) &&
+      slot >= 0 &&
+      typeof name === 'string'
+    ) {
+      out[key] = { slot, name };
+    }
   }
   return out;
 }
@@ -158,6 +183,7 @@ export function readConfig(): PixelAgentsConfig {
         externalAssetDirectories: [],
         hooksConsent: {},
         hooksEnabled: {},
+        rooms: {},
       };
     }
     const raw = fs.readFileSync(filePath, 'utf-8');
@@ -170,6 +196,7 @@ export function readConfig(): PixelAgentsConfig {
         : [],
       hooksConsent: parseHooksConsent(parsed.hooksConsent),
       hooksEnabled: parseHooksEnabled(parsed.hooksEnabled),
+      rooms: parseRooms(parsed.rooms),
     };
   } catch (err) {
     console.error('[Pixel Agents] Failed to read config file:', err);
@@ -179,8 +206,21 @@ export function readConfig(): PixelAgentsConfig {
       externalAssetDirectories: [],
       hooksConsent: {},
       hooksEnabled: {},
+      rooms: {},
     };
   }
+}
+
+/** Read the persisted standalone room registry. */
+export function getRoomRegistry(): RoomRegistry {
+  return readConfig().rooms;
+}
+
+/** Persist the standalone room registry (slot + name per window key). */
+export function setRoomRegistry(rooms: RoomRegistry): void {
+  const cfg = readConfig();
+  cfg.rooms = rooms;
+  writeConfig(cfg);
 }
 
 // ── Per-provider hooks consent + preference ─────────────────

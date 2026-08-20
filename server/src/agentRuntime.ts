@@ -12,8 +12,10 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
+import type { RoomInfoEntry } from '../../core/src/messages.js';
 import type { HookProvider } from '../../core/src/provider.js';
 import type { AgentStateStore } from './agentStateStore.js';
+import { getRoomRegistry, setRoomRegistry } from './configPersistence.js';
 import { DEFAULT_MAX_CONTEXT_TOKENS, REGISTRY_SCAN_INTERVAL_MS } from './constants.js';
 import { DismissalTracker } from './dismissalTracker.js';
 import {
@@ -36,8 +38,11 @@ import {
 } from './fileWatcher.js';
 import type { HookEvent } from './hookEventHandler.js';
 import { HookEventHandler } from './hookEventHandler.js';
+import { placeSessions, type SessionPlacement, type TopologyDeps } from './iterm2Topology.js';
+import { type GeneratedLayout, generateOfficeLayout } from './officeRoomLayout.js';
 import { assignPaletteIfNeeded } from './paletteAssigner.js';
 import { PathSet, pathsMatch } from './pathKey.js';
+import { reconcileRooms, type RoomRegistry, roomsInSlotOrder } from './roomRegistry.js';
 import { SessionRouter } from './sessionRouter.js';
 import { SubagentWatch } from './subagentWatch.js';
 import {
@@ -83,6 +88,19 @@ export class AgentRuntime {
    *  registry. Only these are removed when their pid leaves the registry; agents
    *  adopted by hooks or the workspace scanner are left to their own lifecycles. */
   private readonly registrySessions = new Map<string, number>();
+
+  // ── Room-per-window state (standalone) ──
+  private roomScanTimer: ReturnType<typeof setInterval> | null = null;
+  private roomScanInFlight = false;
+  private topologyDeps: TopologyDeps = {};
+  /** Window-key → {slot, name}. Loaded from config on start, persisted on change. */
+  private roomRegistry: RoomRegistry = {};
+  /** sessionId → its room's area label, recomputed each topology scan. Read by
+   *  scanRegistryOnce so a freshly-adopted agent gets its room on first render. */
+  private readonly sessionRoom = new Map<string, string>();
+  /** The office layout generated from the current rooms; null until first scan. */
+  private roomLayout: GeneratedLayout | null = null;
+  private roomsInfo: RoomInfoEntry[] = [];
 
   // Configuration refs (mutable, shared with scanners)
   readonly watchAllSessions = { current: false };
@@ -516,6 +534,7 @@ export class AgentRuntime {
         () => this.store.persist(),
         undefined,
         session.name,
+        this.sessionRoom.get(session.sessionId),
       );
 
       const adoptedId = this.findAgentIdBySession(session.sessionId);
@@ -538,6 +557,132 @@ export class AgentRuntime {
       if (agent.sessionId === sessionId) return id;
     }
     return null;
+  }
+
+  // ── Room-per-window orchestration (standalone) ──
+
+  /** The generated office layout (null until the first room scan). */
+  getRoomLayout(): GeneratedLayout | null {
+    return this.roomLayout;
+  }
+
+  /** Current rooms + names, for the roomsInfo message. */
+  getRoomsInfo(): RoomInfoEntry[] {
+    return this.roomsInfo;
+  }
+
+  /** Inject topology/liveness deps (tests). */
+  setTopologyDeps(deps: TopologyDeps): void {
+    this.topologyDeps = deps;
+  }
+
+  /**
+   * Start room-per-window scanning. Each tick reads the live sessions + iTerm2
+   * topology, (re)generates the office layout, and adopts/labels agents into
+   * their window's room. Loads the persisted room registry first so names
+   * survive restarts.
+   */
+  startRoomScanning(): void {
+    if (this.roomScanTimer) return;
+    this.roomRegistry = getRoomRegistry();
+    void this.syncStandalone();
+    this.roomScanTimer = setInterval(() => void this.syncStandalone(), REGISTRY_SCAN_INTERVAL_MS);
+  }
+
+  /** The room area label for a placement: its iTerm2 window, or the catch-all. */
+  private static roomKeyFor(p: SessionPlacement): string {
+    return p.windowId !== null ? `win-${p.windowId}` : 'other';
+  }
+
+  /**
+   * One standalone pass: topology → rooms → layout → agents. Reentrancy-guarded
+   * because the topology read is async and ticks could otherwise overlap.
+   */
+  async syncStandalone(): Promise<void> {
+    if (this.roomScanInFlight) return;
+    this.roomScanInFlight = true;
+    try {
+      const live = listLiveSessions(this.registryScanDeps);
+      const placements = await placeSessions(live, this.topologyDeps);
+
+      // Group sessions by room key, preserving first-seen order for naming.
+      const byRoom = new Map<string, SessionPlacement[]>();
+      for (const p of placements) {
+        const key = AgentRuntime.roomKeyFor(p);
+        const list = byRoom.get(key) ?? [];
+        list.push(p);
+        byRoom.set(key, list);
+      }
+
+      // Reconcile stable slots; a new room is named after its first session
+      // (or "Other" for the catch-all), then renamable.
+      const activeKeys = [...byRoom.keys()];
+      const nameFor = (key: string): string => {
+        if (key === 'other') return 'Other';
+        const first = byRoom.get(key)?.[0];
+        return first?.name || key;
+      };
+      const { registry, changed } = reconcileRooms(this.roomRegistry, activeKeys, nameFor);
+      this.roomRegistry = registry;
+      setRoomRegistry(registry);
+
+      // sessionId → room label, for scanRegistryOnce's adopt-time labeling.
+      this.sessionRoom.clear();
+      for (const p of placements) {
+        this.sessionRoom.set(p.sessionId, AgentRuntime.roomKeyFor(p));
+      }
+
+      // Regenerate + broadcast the layout only when the room set/slots moved.
+      const ordered = roomsInSlotOrder(registry);
+      if (changed || !this.roomLayout) {
+        const specs = ordered.map(({ key }) => ({
+          label: key,
+          capacity: byRoom.get(key)?.length ?? 1,
+        }));
+        const generated = generateOfficeLayout(specs);
+        this.roomLayout = generated.layout;
+        this.roomsInfo = generated.rooms.map((box) => ({
+          label: box.label,
+          name: registry[box.label]?.name ?? box.label,
+          centerCol: box.centerCol,
+          centerRow: box.centerRow,
+        }));
+        this.store.broadcast({ type: 'layoutLoaded', layout: this.roomLayout });
+        this.broadcastRoomsInfo();
+      }
+
+      // Adopt appeared sessions / reap gone ones (uses sessionRoom for labels).
+      this.scanRegistryOnce();
+
+      // Reconcile room labels of already-adopted agents (e.g. a pane dragged to
+      // another window) and broadcast the move.
+      for (const p of placements) {
+        const id = this.findAgentIdBySession(p.sessionId);
+        if (id === null) continue;
+        const agent = this.store.get(id);
+        const desired = AgentRuntime.roomKeyFor(p);
+        if (agent && agent.roomLabel !== desired) {
+          agent.roomLabel = desired;
+          this.store.broadcast({ type: 'agentRoom', id, roomLabel: desired });
+        }
+      }
+    } finally {
+      this.roomScanInFlight = false;
+    }
+  }
+
+  /** Rename a room by its area label; persists and re-broadcasts roomsInfo. */
+  renameRoom(label: string, name: string): void {
+    const entry = this.roomRegistry[label];
+    if (!entry) return;
+    entry.name = name;
+    setRoomRegistry(this.roomRegistry);
+    this.roomsInfo = this.roomsInfo.map((r) => (r.label === label ? { ...r, name } : r));
+    this.broadcastRoomsInfo();
+  }
+
+  private broadcastRoomsInfo(): void {
+    this.store.broadcast({ type: 'roomsInfo', rooms: this.roomsInfo });
   }
 
   // ── Restore persisted external agents (standalone) ──
@@ -668,7 +813,12 @@ export class AgentRuntime {
       clearInterval(this.registryScanTimer);
       this.registryScanTimer = null;
     }
+    if (this.roomScanTimer) {
+      clearInterval(this.roomScanTimer);
+      this.roomScanTimer = null;
+    }
     this.registrySessions.clear();
+    this.sessionRoom.clear();
 
     for (const id of [...this.store.keys()]) {
       this.removeAgent(id);

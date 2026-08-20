@@ -176,10 +176,13 @@ export class OfficeState {
       ch.seatId = null; // will be reassigned below
     }
 
-    // Second pass: assign remaining characters to free seats
+    // Second pass: assign remaining characters to free seats. Room-per-window
+    // characters must land back in their own room (walls, not preference).
     for (const ch of this.characters.values()) {
       if (ch.seatId) continue;
-      const seatId = this.findFreeSeat(ch.folderName);
+      const seatId = ch.roomLabel
+        ? this.findFreeSeatInRoom(ch.roomLabel)
+        : this.findFreeSeat(ch.folderName);
       if (seatId) {
         this.seats.get(seatId)!.assigned = true;
         ch.seatId = seatId;
@@ -195,6 +198,31 @@ export class OfficeState {
     // Relocate any characters that ended up outside bounds or on non-walkable tiles
     for (const ch of this.characters.values()) {
       if (ch.seatId) continue; // seated characters are fine
+      // Room-per-window: a seatless room character must sit inside its room's
+      // walls. After a layout regen its old tile may be a wall or another room,
+      // so re-home it into its room whenever it's not already on that room's floor.
+      if (ch.roomLabel) {
+        const idx = ch.tileRow * layout.cols + ch.tileCol;
+        const inRoom =
+          ch.tileCol >= 0 &&
+          ch.tileCol < layout.cols &&
+          ch.tileRow >= 0 &&
+          ch.tileRow < layout.rows &&
+          layout.areaTiles?.[idx] === ch.roomLabel &&
+          isWalkable(ch.tileCol, ch.tileRow, this.tileMap, this.blockedTiles);
+        if (!inRoom) {
+          const spawn = this.randomWalkableInRoom(ch.roomLabel);
+          if (spawn) {
+            ch.tileCol = spawn.col;
+            ch.tileRow = spawn.row;
+            ch.x = spawn.col * TILE_SIZE + TILE_SIZE / 2;
+            ch.y = spawn.row * TILE_SIZE + TILE_SIZE / 2;
+            ch.path = [];
+            ch.moveProgress = 0;
+          }
+        }
+        continue;
+      }
       if (
         ch.tileCol < 0 ||
         ch.tileCol >= layout.cols ||
@@ -387,6 +415,32 @@ export class OfficeState {
     return this.pickFromSeats(freeSeats, electronicsTiles);
   }
 
+  /** A free seat inside a specific room (by area label), or null when that room
+   *  has no free seat. Never spills into another room — confinement depends on
+   *  the character starting inside its own walls. */
+  private findFreeSeatInRoom(roomLabel: string): string | null {
+    const electronicsTiles = this.buildElectronicsTileSet();
+    const inRoom: string[] = [];
+    for (const [uid, seat] of this.seats) {
+      if (!seat.assigned && this.seatZone(uid) === roomLabel) inRoom.push(uid);
+    }
+    return this.pickFromSeats(inRoom, electronicsTiles);
+  }
+
+  /** A random walkable tile inside a room, avoiding tiles occupied by other
+   *  characters — the seatless fallback that still keeps a character in-room. */
+  private randomWalkableInRoom(roomLabel: string): { col: number; row: number } | null {
+    const tiles = this.layout.areaTiles;
+    if (!tiles) return null;
+    const occupied = new Set<string>();
+    for (const ch of this.characters.values()) occupied.add(`${ch.tileCol},${ch.tileRow}`);
+    const cands = this.walkableTiles.filter((t) => {
+      const idx = t.row * this.layout.cols + t.col;
+      return tiles[idx] === roomLabel && !occupied.has(`${t.col},${t.row}`);
+    });
+    return cands.length > 0 ? cands[Math.floor(Math.random() * cands.length)] : null;
+  }
+
   /** Closest walkable tile to (col,row) not occupied by another character, or null. */
   private closestFreeWalkableTile(col: number, row: number): { col: number; row: number } | null {
     const occupied = new Set<string>();
@@ -430,6 +484,7 @@ export class OfficeState {
     skipSpawnEffect?: boolean,
     folderName?: string,
     nearAgentId?: number,
+    roomLabel?: string,
   ): void {
     if (this.characters.has(id)) return;
 
@@ -461,7 +516,9 @@ export class OfficeState {
       seatId = closestFreeSeat(this.seats, anchorAt.col, anchorAt.row);
     }
     if (!seatId) {
-      seatId = this.findFreeSeat(folderName);
+      // Room-per-window: seat strictly inside the agent's room. Anything else
+      // would place the character in the wrong room, where the walls trap it.
+      seatId = roomLabel ? this.findFreeSeatInRoom(roomLabel) : this.findFreeSeat(folderName);
     }
 
     let ch: Character;
@@ -470,8 +527,11 @@ export class OfficeState {
       seat.assigned = true;
       ch = createCharacter(id, palette, seatId, seat, hueShift);
     } else {
-      // No seats — teammates spawn beside their anchor, others at a random walkable tile
-      let spawn = anchorAt ? this.closestFreeWalkableTile(anchorAt.col, anchorAt.row) : null;
+      // No free seat. In a room, spawn on that room's floor so the walls still
+      // confine it; otherwise teammates spawn beside their anchor, others random.
+      let spawn = roomLabel ? this.randomWalkableInRoom(roomLabel) : null;
+      if (!spawn)
+        spawn = anchorAt ? this.closestFreeWalkableTile(anchorAt.col, anchorAt.row) : null;
       if (!spawn) {
         spawn =
           this.walkableTiles.length > 0
@@ -487,6 +547,9 @@ export class OfficeState {
 
     if (folderName) {
       ch.folderName = folderName;
+    }
+    if (roomLabel) {
+      ch.roomLabel = roomLabel;
     }
     if (!skipSpawnEffect) {
       startMatrixEffect(ch, 'spawn');
@@ -1077,6 +1140,41 @@ export class OfficeState {
     const ch = this.characters.get(id);
     if (!ch) return;
     ch.isHeadless = headless;
+  }
+
+  /** Move a character to another room (its iTerm2 window changed). Frees the old
+   *  seat, takes a seat in the new room (or a walkable tile there), and snaps the
+   *  character inside the new walls. No-op when the room is unchanged. */
+  setAgentRoom(id: number, roomLabel: string): void {
+    const ch = this.characters.get(id);
+    if (!ch || ch.roomLabel === roomLabel) return;
+    if (ch.seatId) {
+      const old = this.seats.get(ch.seatId);
+      if (old) old.assigned = false;
+      ch.seatId = null;
+    }
+    ch.roomLabel = roomLabel;
+    const seatId = this.findFreeSeatInRoom(roomLabel);
+    if (seatId) {
+      const seat = this.seats.get(seatId)!;
+      seat.assigned = true;
+      ch.seatId = seatId;
+      ch.tileCol = seat.seatCol;
+      ch.tileRow = seat.seatRow;
+      ch.x = seat.seatCol * TILE_SIZE + TILE_SIZE / 2;
+      ch.y = seat.seatRow * TILE_SIZE + TILE_SIZE / 2;
+      ch.dir = seat.facingDir;
+    } else {
+      const spawn = this.randomWalkableInRoom(roomLabel);
+      if (spawn) {
+        ch.tileCol = spawn.col;
+        ch.tileRow = spawn.row;
+        ch.x = spawn.col * TILE_SIZE + TILE_SIZE / 2;
+        ch.y = spawn.row * TILE_SIZE + TILE_SIZE / 2;
+      }
+    }
+    ch.path = [];
+    ch.moveProgress = 0;
   }
 
   setAgentContext(id: number, contextTokens: number, maxContextTokens: number): void {

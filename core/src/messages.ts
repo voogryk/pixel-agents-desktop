@@ -38,7 +38,9 @@ export type ServerMessage =
   | ExternalAssetDirectoriesUpdated
   | AreaMappingsLoaded
   | WorkspaceFolders
-  | AgentDiagnostics;
+  | AgentDiagnostics
+  | AgentRoom
+  | RoomsInfo;
 
 export type ClientMessage =
   | WebviewReady
@@ -62,7 +64,8 @@ export type ClientMessage =
   | RemoveExternalAssetDirectory
   | SaveAreaMappings
   | SetShowAreas
-  | RequestDiagnostics;
+  | RequestDiagnostics
+  | RenameRoom;
 
 export interface ProviderCapabilities {
   type: 'providerCapabilities';
@@ -74,6 +77,7 @@ export interface AgentCreated {
   type: 'agentCreated';
   id: number;
   folderName?: string;
+  roomLabel?: string;
   isExternal?: boolean;
   palette?: number;
   hueShift?: number;
@@ -95,6 +99,7 @@ export interface ExistingAgents {
   agentMeta: Record<string, AgentSeatMeta>;
   folderNames: Record<string, string>;
   externalAgents: Record<string, boolean>;
+  roomLabels?: Record<string, string>;
 }
 
 export interface AgentSeatMeta {
@@ -315,6 +320,24 @@ export interface AgentDiagnostics {
   agents: Record<string, any>[];
 }
 
+export interface AgentRoom {
+  type: 'agentRoom';
+  id: number;
+  roomLabel: string;
+}
+
+export interface RoomsInfo {
+  type: 'roomsInfo';
+  rooms: RoomInfoEntry[];
+}
+
+export interface RoomInfoEntry {
+  label: string;
+  name: string;
+  centerCol: number;
+  centerRow: number;
+}
+
 export interface WebviewReady {
   type: 'webviewReady';
 }
@@ -428,4 +451,10 @@ export interface SetShowAreas {
 
 export interface RequestDiagnostics {
   type: 'requestDiagnostics';
+}
+
+export interface RenameRoom {
+  type: 'renameRoom';
+  label: string;
+  name: string;
 }

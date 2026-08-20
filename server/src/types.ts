@@ -22,6 +22,11 @@ export interface AgentState {
   hadToolsInTurn: boolean;
   /** Workspace folder name (only set for multi-root workspaces) */
   folderName?: string;
+  /** Standalone "one room per iTerm2 window": the area label of the room this
+   *  agent belongs to. The webview seats the character in the matching room and
+   *  the walls keep it there. Undefined outside standalone / before topology is
+   *  known. */
+  roomLabel?: string;
   /** Timestamp of last JSONL data received (ms since epoch) */
   lastDataAt: number;
   /** Total JSONL lines processed for this agent */

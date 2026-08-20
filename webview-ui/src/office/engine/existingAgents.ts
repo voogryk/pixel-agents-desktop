@@ -25,6 +25,7 @@ export interface PendingAgent {
   hueShift?: number;
   seatId?: string;
   folderName?: string;
+  roomLabel?: string;
   isHeadless?: boolean;
 }
 
@@ -38,6 +39,8 @@ export interface ExistingAgentsOffice {
     preferredSeatId?: string,
     skipSpawnEffect?: boolean,
     folderName?: string,
+    nearAgentId?: number,
+    roomLabel?: string,
   ) => void;
   setHeadless: (id: number, headless: boolean) => void;
 }
@@ -57,6 +60,7 @@ export function reconcileExistingAgents(
   layoutReady: boolean,
   pending: PendingAgent[],
   headlessAgents: Record<number, boolean> = {},
+  roomLabels: Record<number, string> = {},
 ): boolean {
   let addedDirectly = false;
   for (const id of incoming) {
@@ -67,11 +71,21 @@ export function reconcileExistingAgents(
       hueShift: m?.hueShift,
       seatId: m?.seatId,
       folderName: folderNames[id],
+      roomLabel: roomLabels[id],
       isHeadless: headlessAgents[id] === true,
     };
     if (layoutReady) {
       if (!os.characters.has(p.id)) {
-        os.addAgent(p.id, p.palette, p.hueShift, p.seatId, true, p.folderName);
+        os.addAgent(
+          p.id,
+          p.palette,
+          p.hueShift,
+          p.seatId,
+          true,
+          p.folderName,
+          undefined,
+          p.roomLabel,
+        );
         if (p.isHeadless) os.setHeadless(p.id, true);
         addedDirectly = true;
       }
