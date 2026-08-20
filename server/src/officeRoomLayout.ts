@@ -131,6 +131,33 @@ function cellOf(slot: number): { gx: number; gy: number } {
   return { gx: slot % ROOM_COLS, gy: Math.floor(slot / ROOM_COLS) };
 }
 
+/** Rows at the bottom of a room reserved for decor (lounge / plants / bin). */
+const DECOR_BAND_H = 5;
+
+/** 32-bit FNV-1a hash of a string — a stable seed per room key. */
+function hashString(s: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
+}
+
+/** Deterministic PRNG (mulberry32). Seeded per room so decor is varied between
+ *  rooms but STABLE for a given room across regenerations — a room keeps its
+ *  couches and plants when another window opens, rather than reshuffling. */
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
 /**
  * A desk workstation: DESK_FRONT (3x2) with a PC on top and a bench seat below
  * it, facing up into the desk. Geometry copied from the bundled default layout
@@ -146,27 +173,114 @@ function workstation(dx: number, dy: number, uid: string): PlacedFurniture[] {
 }
 
 /**
- * A lounge: a 2x2 COFFEE_TABLE (with a coffee cup) ringed by four sofas. Origin
- * (tx,ty) is the table's top-left; the block spans cols tx-1..tx+2, rows
- * ty-1..ty+2. Sofas are seats too — lower-priority than PC desks, so agents fill
- * desks first and only spill onto the couches.
+ * A lounge whose table top-left is (tx,ty). `full` rings the COFFEE_TABLE with
+ * four sofas; otherwise just north + south. The block spans cols tx-1..tx+2,
+ * rows ty-1..ty+2. Sofas are seats too — lower-priority than PC desks, so agents
+ * fill desks first and only spill onto the couches.
  */
-function lounge(tx: number, ty: number, uid: string): PlacedFurniture[] {
-  return [
+function lounge(tx: number, ty: number, uid: string, full: boolean): PlacedFurniture[] {
+  const pieces: PlacedFurniture[] = [
     { type: 'COFFEE_TABLE', uid: `${uid}-table`, col: tx, row: ty },
     { type: 'COFFEE', uid: `${uid}-cup`, col: tx, row: ty + 1 },
     { type: 'SOFA_FRONT', uid: `${uid}-sofa-n`, col: tx, row: ty - 1 },
     { type: 'SOFA_BACK', uid: `${uid}-sofa-s`, col: tx, row: ty + 2 },
-    { type: 'SOFA_SIDE', uid: `${uid}-sofa-w`, col: tx - 1, row: ty },
-    { type: 'SOFA_SIDE:left', uid: `${uid}-sofa-e`, col: tx + 2, row: ty },
   ];
+  if (full) {
+    pieces.push(
+      { type: 'SOFA_SIDE', uid: `${uid}-sofa-w`, col: tx - 1, row: ty },
+      { type: 'SOFA_SIDE:left', uid: `${uid}-sofa-e`, col: tx + 2, row: ty },
+    );
+  }
+  return pieces;
+}
+
+/**
+ * Decorate a room's bottom band, varied per room but deterministic for a given
+ * room (seeded on its label): a lounge — full, half, or absent — placed left /
+ * center / right, then a seeded scatter of plants and maybe a bin. An occupancy
+ * grid keeps pieces from overlapping. `ix,iy,iw,ih` is the interior; decor stays
+ * inside the reserved band so it never touches the workstations above.
+ */
+function furnishDecor(
+  ix: number,
+  iy: number,
+  iw: number,
+  ih: number,
+  label: string,
+): PlacedFurniture[] {
+  const out: PlacedFurniture[] = [];
+  const bandTop = iy + ih - DECOR_BAND_H;
+  const rng = mulberry32(hashString(label));
+  const occ = new Set<string>();
+
+  const fits = (c: number, r: number, w: number, h: number): boolean => {
+    if (c < ix || r < bandTop || c + w - 1 > ix + iw - 1 || r + h - 1 > iy + ih - 1) return false;
+    for (let dr = 0; dr < h; dr++) {
+      for (let dc = 0; dc < w; dc++) {
+        if (occ.has(`${c + dc},${r + dr}`)) return false;
+      }
+    }
+    return true;
+  };
+  const mark = (c: number, r: number, w: number, h: number): void => {
+    for (let dr = 0; dr < h; dr++) for (let dc = 0; dc < w; dc++) occ.add(`${c + dc},${r + dr}`);
+  };
+  const place = (
+    type: string,
+    uid: string,
+    c: number,
+    r: number,
+    w: number,
+    h: number,
+  ): boolean => {
+    if (!fits(c, r, w, h)) return false;
+    mark(c, r, w, h);
+    out.push({ type, uid, col: c, row: r });
+    return true;
+  };
+
+  // Lounge: full / half / none, at a seeded horizontal position.
+  const style = rng();
+  const full = style < 0.55;
+  const hasLounge = style < 0.8; // 20% of rooms get no lounge
+  if (hasLounge) {
+    const ty = bandTop + 1;
+    const slots = [ix + 2, ix + Math.floor(iw / 2) - 1, ix + iw - 3];
+    const tx = slots[Math.floor(rng() * slots.length)];
+    // Reserve the lounge's whole 4x4 bbox before committing so a side sofa
+    // never lands on a plant placed later (and vice-versa).
+    if (fits(tx - 1, ty - 1, 4, 4)) {
+      for (const piece of lounge(tx, ty, `${label}-lounge`, full)) {
+        const w = piece.type.startsWith('SOFA_SIDE') ? 1 : piece.type === 'COFFEE_TABLE' ? 2 : 2;
+        const h = piece.type.startsWith('SOFA_SIDE') ? 2 : 1;
+        place(piece.type, piece.uid, piece.col, piece.row, w, h);
+      }
+    }
+  }
+
+  // Plants (1x2): 1–3, seeded columns along the band's bottom row.
+  const plantTypes = ['PLANT', 'PLANT_2'];
+  const nPlants = 1 + Math.floor(rng() * 3);
+  for (let i = 0; i < nPlants; i++) {
+    const c = ix + Math.floor(rng() * iw);
+    const type = plantTypes[Math.floor(rng() * plantTypes.length)];
+    place(type, `${label}-plant-${i}`, c, iy + ih - 2, 1, 2);
+  }
+
+  // A bin, half the time.
+  if (rng() < 0.5) {
+    const c = ix + Math.floor(rng() * iw);
+    place('BIN', `${label}-bin`, c, iy + ih - 1, 1, 1);
+  }
+
+  return out;
 }
 
 /**
  * Furnish a room's interior: a grid of workstations (one per occupant, capped),
- * a lounge in the lower area, and a couple of plants. `ix,iy` is the interior
- * top-left; `iw,ih` its size. Every piece is bounds-checked so nothing lands on
- * a wall. Returns the placed furniture.
+ * then a seeded decor band (lounge + plants + bin) that varies per room. `ix,iy`
+ * is the interior top-left; `iw,ih` its size. Every piece is bounds-checked so
+ * nothing lands on a wall. Returns the placed furniture.
  */
 function furnishRoom(
   ix: number,
@@ -180,9 +294,8 @@ function furnishRoom(
   const within = (c: number, r: number, w: number, h: number) =>
     c >= ix && r >= iy && c + w - 1 <= ix + iw - 1 && r + h - 1 <= iy + ih - 1;
 
-  // Reserve the bottom LOUNGE_H rows for the lounge; workstations fill above.
-  const LOUNGE_H = 5;
-  const wsZoneH = ih - LOUNGE_H;
+  // Reserve the bottom DECOR_BAND_H rows for decor; workstations fill above.
+  const wsZoneH = ih - DECOR_BAND_H;
   const perRow = Math.max(1, Math.floor(iw / WORKSTATION_STRIDE_X));
   const wsRows = Math.max(1, Math.floor(wsZoneH / WORKSTATION_STRIDE_Y));
   const wsCapacity = perRow * wsRows;
@@ -199,23 +312,7 @@ function furnishRoom(
     }
   }
 
-  // Lounge, centered in the reserved bottom band (table top-left).
-  const tx = ix + 2;
-  const ty = iy + ih - LOUNGE_H + 1;
-  if (within(tx - 1, ty - 1, 4, 4)) {
-    out.push(...lounge(tx, ty, `${label}-lounge`));
-  }
-
-  // Plants in the two right corners (1x2, purely decorative).
-  const plantTop = { col: ix + iw - 1, row: iy };
-  const plantBot = { col: ix + iw - 1, row: iy + ih - 2 };
-  if (within(plantTop.col, plantTop.row, 1, 2)) {
-    out.push({ type: 'PLANT', uid: `${label}-plant-a`, col: plantTop.col, row: plantTop.row });
-  }
-  if (within(plantBot.col, plantBot.row, 1, 2)) {
-    out.push({ type: 'PLANT_2', uid: `${label}-plant-b`, col: plantBot.col, row: plantBot.row });
-  }
-
+  out.push(...furnishDecor(ix, iy, iw, ih, label));
   return out;
 }
 

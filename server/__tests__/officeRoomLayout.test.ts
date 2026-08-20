@@ -74,8 +74,32 @@ describe('generateOfficeLayout', () => {
     expect(benches).toHaveLength(1);
     expect(layout.furniture.some((f) => f.type === 'DESK_FRONT')).toBe(true);
     expect(layout.furniture.some((f) => f.type === 'PC_FRONT_OFF')).toBe(true);
-    // And a lounge with a coffee table.
-    expect(layout.furniture.some((f) => f.type === 'COFFEE_TABLE')).toBe(true);
+    // And some decor (a plant is always placed).
+    expect(layout.furniture.some((f) => f.type.startsWith('PLANT'))).toBe(true);
+  });
+
+  it('varies decor per room but keeps it stable for a given label (seeded)', () => {
+    // Same label → byte-identical decor across regenerations.
+    const a1 = generateOfficeLayout([{ label: 'win-a', capacity: 1 }]).layout.furniture;
+    const a2 = generateOfficeLayout([{ label: 'win-a', capacity: 1 }]).layout.furniture;
+    expect(a1).toEqual(a2);
+
+    // Across many distinct labels the decor is not all identical, and lounges
+    // appear for at least some of them.
+    const decorSigs = new Set<string>();
+    let anyLounge = false;
+    for (let i = 0; i < 12; i++) {
+      const f = generateOfficeLayout([{ label: `win-${i}`, capacity: 1 }]).layout.furniture;
+      const decor = f
+        .filter((x) => !['DESK_FRONT', 'PC_FRONT_OFF', 'CUSHIONED_BENCH'].includes(x.type))
+        .map((x) => `${x.type}@${x.col},${x.row}`)
+        .sort()
+        .join('|');
+      decorSigs.add(decor);
+      if (f.some((x) => x.type === 'COFFEE_TABLE')) anyLounge = true;
+    }
+    expect(decorSigs.size).toBeGreaterThan(1);
+    expect(anyLounge).toBe(true);
   });
 
   it('caps desk seats at MAX_SEATS_PER_ROOM and keeps all furniture on interior tiles', () => {
