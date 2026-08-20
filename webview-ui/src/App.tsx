@@ -8,6 +8,7 @@ import { DebugView } from './components/DebugView.js';
 import { EditActionBar } from './components/EditActionBar.js';
 import { IntroBubble } from './components/IntroBubble.js';
 import { MigrationNotice } from './components/MigrationNotice.js';
+import { RoomsPanel } from './components/RoomsPanel.js';
 import { SettingsModal } from './components/SettingsModal.js';
 import { Tooltip } from './components/Tooltip.js';
 import { Modal } from './components/ui/Modal.js';
@@ -83,6 +84,7 @@ function App() {
     extensionVersion,
     watchAllSessions,
     setWatchAllSessions,
+    rooms,
     alwaysShowLabels,
     ghostHeadlessAgents,
     setGhostHeadlessAgents,
@@ -355,6 +357,11 @@ function App() {
       {!isDebugMode ? (
         <>
           <ZoomControls zoom={editor.zoom} onZoomChange={editor.handleZoomChange} />
+
+          <RoomsPanel
+            rooms={rooms}
+            onRename={(label, name) => transport.send({ type: 'renameRoom', label, name })}
+          />
 
           {/* Vignette overlay */}
           <div

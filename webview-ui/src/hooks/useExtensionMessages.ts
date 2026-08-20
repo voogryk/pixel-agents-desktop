@@ -5,7 +5,10 @@ import { playDoneSound, playPermissionSound, setSoundEnabled } from '../notifica
 import type { ExistingAgentMeta, PendingAgent } from '../office/engine/existingAgents.js';
 import { reconcileExistingAgents } from '../office/engine/existingAgents.js';
 import type { OfficeState } from '../office/engine/officeState.js';
-import { setGhostHeadlessAgents as setRendererGhostHeadlessAgents } from '../office/engine/renderer.js';
+import {
+  setGhostHeadlessAgents as setRendererGhostHeadlessAgents,
+  setRoomNames,
+} from '../office/engine/renderer.js';
 import { setFloorSprites } from '../office/floorTiles.js';
 import { buildDynamicCatalog } from '../office/layout/furnitureCatalog.js';
 import { migrateLayoutColors } from '../office/layout/layoutSerializer.js';
@@ -764,7 +767,9 @@ export function useExtensionMessages(
       } else if (msg.type === 'agentRoom') {
         os.setAgentRoom(msg.id as number, msg.roomLabel as string);
       } else if (msg.type === 'roomsInfo') {
-        setRooms((msg.rooms || []) as RoomInfo[]);
+        const list = (msg.rooms || []) as RoomInfo[];
+        setRooms(list);
+        setRoomNames(new Map(list.map((r) => [r.label, r.name])));
       }
     };
     const unsubscribe = transport.onMessage(handler);

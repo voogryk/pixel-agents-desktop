@@ -95,6 +95,18 @@ export function isGhostHeadlessAgentsEnabled(): boolean {
   return ghostHeadlessAgents;
 }
 
+/**
+ * Room-per-window display names (area label → name), drawn over each room every
+ * frame. Module state for the same reason as ghostHeadlessAgents: the rAF loop
+ * reads it without threading another renderFrame argument. Empty in every mode
+ * but standalone room-per-window, where a roomsInfo message fills it.
+ */
+let roomNames = new Map<string, string>();
+
+export function setRoomNames(names: Map<string, string>): void {
+  roomNames = names;
+}
+
 // ── Render functions ────────────────────────────────────────────
 
 /**
@@ -291,6 +303,62 @@ export function renderAreaLabels(
     ctx.globalAlpha = AREA_LABEL_ALPHA;
     ctx.fillStyle = colorMap.get(label) ?? AREA_LABEL_FALLBACK_COLOR;
     ctx.fillText(label, cx, cy);
+  }
+  ctx.restore();
+}
+
+/**
+ * Draw each room's display name near the top of its interior (standalone
+ * room-per-window). Unlike renderAreaLabels this is always on and reads the
+ * room name from `names`, positioning at the topmost row of each room's tiles so
+ * the label sits like a door plaque rather than over the occupants.
+ */
+export function renderRoomLabels(
+  ctx: CanvasRenderingContext2D,
+  areaTiles: Array<string | null> | undefined,
+  names: Map<string, string>,
+  cols: number,
+  rows: number,
+  offsetX: number,
+  offsetY: number,
+  zoom: number,
+): void {
+  if (!areaTiles || areaTiles.length === 0 || names.size === 0) return;
+
+  const s = TILE_SIZE * zoom;
+  // Per label: horizontal center (sumX/count) and the minimum row (top of room).
+  const acc = new Map<string, { sumX: number; count: number; minRow: number }>();
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const label = areaTiles[r * cols + c];
+      if (!label || !names.has(label)) continue;
+      const a = acc.get(label);
+      if (a) {
+        a.sumX += c;
+        a.count += 1;
+        if (r < a.minRow) a.minRow = r;
+      } else {
+        acc.set(label, { sumX: c, count: 1, minRow: r });
+      }
+    }
+  }
+  if (acc.size === 0) return;
+
+  const fontSize = Math.max(AREA_LABEL_FONT_SIZE_PX * zoom, AREA_LABEL_MIN_FONT_SIZE_PX);
+  ctx.save();
+  ctx.font = `bold ${fontSize}px 'FS Pixel Sans'`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  for (const [label, a] of acc) {
+    const name = names.get(label) ?? label;
+    const cx = offsetX + (a.sumX / a.count + 0.5) * s;
+    const cy = offsetY + (a.minRow + 0.5) * s;
+    ctx.globalAlpha = AREA_LABEL_SHADOW_ALPHA;
+    ctx.fillStyle = AREA_LABEL_SHADOW_COLOR;
+    ctx.fillText(name, cx + 1, cy + 1);
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = AREA_LABEL_FALLBACK_COLOR;
+    ctx.fillText(name, cx, cy);
   }
   ctx.restore();
 }
@@ -972,6 +1040,10 @@ export function renderFrame(
   if (showAreas) {
     renderAreaLabels(ctx, areaTiles, areas, cols, rows, offsetX, offsetY, zoom);
   }
+
+  // Room-per-window name plaques — always on when the office has named rooms,
+  // independent of the Areas overlay toggle.
+  renderRoomLabels(ctx, areaTiles, roomNames, cols, rows, offsetX, offsetY, zoom);
 
   // Editor overlays
   if (editor) {
