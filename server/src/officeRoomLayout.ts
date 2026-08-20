@@ -28,12 +28,19 @@ const VOID = 255;
 /** Rooms per grid row. Fixed so existing rooms never shift when a new one is
  *  appended (stable slots). */
 export const ROOM_COLS = 3;
-/** Interior floor size of every room (excludes the 1-tile wall border). */
-export const ROOM_INNER_W = 7;
-export const ROOM_INNER_H = 6;
-/** Never place more than this many chairs in one room, however many panes the
- *  window has; extra occupants wander the room seatless (still confined). */
+/** Interior floor size of every room (excludes the 1-tile wall border). Big
+ *  enough to hold a row (or two) of desk workstations plus a lounge and still
+ *  leave open floor for characters to wander. */
+export const ROOM_INNER_W = 16;
+export const ROOM_INNER_H = 13;
+/** Never place more than this many workstations (desk + PC + seat) in one room,
+ *  however many panes the window has; extra occupants take the lounge sofas or
+ *  wander the room seatless (still confined). */
 export const MAX_SEATS_PER_ROOM = 6;
+/** A workstation block is 3 tiles wide, 3 tall (desk 3x2 + seat below), and
+ *  tiled on a 4x4 grid so neighbours don't touch. */
+const WORKSTATION_STRIDE_X = 4;
+const WORKSTATION_STRIDE_Y = 4;
 
 /** HSBC color, matching the webview's ColorValue (h,s,b,c). */
 export interface RoomColor {
@@ -125,6 +132,94 @@ function cellOf(slot: number): { gx: number; gy: number } {
 }
 
 /**
+ * A desk workstation: DESK_FRONT (3x2) with a PC on top and a bench seat below
+ * it, facing up into the desk. Geometry copied from the bundled default layout
+ * so the seat is valid and PC-facing (drives the "typing at the PC" auto-on).
+ * Origin (dx,dy) is the desk's top-left. Occupies cols dx..dx+2, rows dy..dy+2.
+ */
+function workstation(dx: number, dy: number, uid: string): PlacedFurniture[] {
+  return [
+    { type: 'DESK_FRONT', uid: `${uid}-desk`, col: dx, row: dy },
+    { type: 'PC_FRONT_OFF', uid: `${uid}-pc`, col: dx + 1, row: dy },
+    { type: 'CUSHIONED_BENCH', uid: `${uid}-seat`, col: dx + 1, row: dy + 2 },
+  ];
+}
+
+/**
+ * A lounge: a 2x2 COFFEE_TABLE (with a coffee cup) ringed by four sofas. Origin
+ * (tx,ty) is the table's top-left; the block spans cols tx-1..tx+2, rows
+ * ty-1..ty+2. Sofas are seats too — lower-priority than PC desks, so agents fill
+ * desks first and only spill onto the couches.
+ */
+function lounge(tx: number, ty: number, uid: string): PlacedFurniture[] {
+  return [
+    { type: 'COFFEE_TABLE', uid: `${uid}-table`, col: tx, row: ty },
+    { type: 'COFFEE', uid: `${uid}-cup`, col: tx, row: ty + 1 },
+    { type: 'SOFA_FRONT', uid: `${uid}-sofa-n`, col: tx, row: ty - 1 },
+    { type: 'SOFA_BACK', uid: `${uid}-sofa-s`, col: tx, row: ty + 2 },
+    { type: 'SOFA_SIDE', uid: `${uid}-sofa-w`, col: tx - 1, row: ty },
+    { type: 'SOFA_SIDE:left', uid: `${uid}-sofa-e`, col: tx + 2, row: ty },
+  ];
+}
+
+/**
+ * Furnish a room's interior: a grid of workstations (one per occupant, capped),
+ * a lounge in the lower area, and a couple of plants. `ix,iy` is the interior
+ * top-left; `iw,ih` its size. Every piece is bounds-checked so nothing lands on
+ * a wall. Returns the placed furniture.
+ */
+function furnishRoom(
+  ix: number,
+  iy: number,
+  iw: number,
+  ih: number,
+  capacity: number,
+  label: string,
+): PlacedFurniture[] {
+  const out: PlacedFurniture[] = [];
+  const within = (c: number, r: number, w: number, h: number) =>
+    c >= ix && r >= iy && c + w - 1 <= ix + iw - 1 && r + h - 1 <= iy + ih - 1;
+
+  // Reserve the bottom LOUNGE_H rows for the lounge; workstations fill above.
+  const LOUNGE_H = 5;
+  const wsZoneH = ih - LOUNGE_H;
+  const perRow = Math.max(1, Math.floor(iw / WORKSTATION_STRIDE_X));
+  const wsRows = Math.max(1, Math.floor(wsZoneH / WORKSTATION_STRIDE_Y));
+  const wsCapacity = perRow * wsRows;
+  const wsCount = Math.max(1, Math.min(capacity, MAX_SEATS_PER_ROOM, wsCapacity));
+
+  let placed = 0;
+  for (let gr = 0; gr < wsRows && placed < wsCount; gr++) {
+    for (let gc = 0; gc < perRow && placed < wsCount; gc++) {
+      const dx = ix + 1 + gc * WORKSTATION_STRIDE_X;
+      const dy = iy + 1 + gr * WORKSTATION_STRIDE_Y;
+      if (!within(dx, dy, 3, 3)) continue;
+      out.push(...workstation(dx, dy, `${label}-ws${placed}`));
+      placed++;
+    }
+  }
+
+  // Lounge, centered in the reserved bottom band (table top-left).
+  const tx = ix + 2;
+  const ty = iy + ih - LOUNGE_H + 1;
+  if (within(tx - 1, ty - 1, 4, 4)) {
+    out.push(...lounge(tx, ty, `${label}-lounge`));
+  }
+
+  // Plants in the two right corners (1x2, purely decorative).
+  const plantTop = { col: ix + iw - 1, row: iy };
+  const plantBot = { col: ix + iw - 1, row: iy + ih - 2 };
+  if (within(plantTop.col, plantTop.row, 1, 2)) {
+    out.push({ type: 'PLANT', uid: `${label}-plant-a`, col: plantTop.col, row: plantTop.row });
+  }
+  if (within(plantBot.col, plantBot.row, 1, 2)) {
+    out.push({ type: 'PLANT_2', uid: `${label}-plant-b`, col: plantBot.col, row: plantBot.row });
+  }
+
+  return out;
+}
+
+/**
  * Build the office. Rooms are consumed in order; index i is the stable slot.
  * An empty list yields a single empty walled room so the office is never a
  * zero-size grid the renderer can't center.
@@ -180,22 +275,17 @@ export function generateOfficeLayout(specs: RoomSpec[]): GeneratedOffice {
 
     areas.push({ label: room.label, color: hex });
 
-    // Chairs: one per occupant, capped. Laid left-to-right on interior rows,
-    // inset one tile from the walls, wrapping to the next row, leaving ample
-    // walkable floor between them.
-    const seatCount = Math.max(1, Math.min(room.capacity, MAX_SEATS_PER_ROOM));
-    let placed = 0;
-    for (let sr = 0; sr < ROOM_INNER_H && placed < seatCount; sr += 2) {
-      for (let sc = 0; sc < ROOM_INNER_W && placed < seatCount; sc += 2) {
-        furniture.push({
-          type: 'CUSHIONED_CHAIR_FRONT',
-          uid: `${room.label}-seat-${placed}`,
-          col: originCol + 1 + sc,
-          row: originRow + 1 + sr,
-        });
-        placed++;
-      }
-    }
+    // Prefab furniture: desks (one per occupant, capped) + a lounge + plants.
+    furniture.push(
+      ...furnishRoom(
+        originCol + 1,
+        originRow + 1,
+        ROOM_INNER_W,
+        ROOM_INNER_H,
+        room.capacity,
+        room.label,
+      ),
+    );
 
     boxes.push({
       label: room.label,

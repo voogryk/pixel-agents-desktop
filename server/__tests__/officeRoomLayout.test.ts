@@ -69,16 +69,22 @@ describe('generateOfficeLayout', () => {
       expect(layout.tiles[(box.originRow + ROOM_INNER_H + 1) * layout.cols + c]).toBe(WALL);
     }
 
-    const chairs = layout.furniture.filter((f) => f.type === 'CUSHIONED_CHAIR_FRONT');
-    expect(chairs).toHaveLength(1);
+    // One occupant → one workstation (desk + PC + bench seat).
+    const benches = layout.furniture.filter((f) => f.type === 'CUSHIONED_BENCH');
+    expect(benches).toHaveLength(1);
+    expect(layout.furniture.some((f) => f.type === 'DESK_FRONT')).toBe(true);
+    expect(layout.furniture.some((f) => f.type === 'PC_FRONT_OFF')).toBe(true);
+    // And a lounge with a coffee table.
+    expect(layout.furniture.some((f) => f.type === 'COFFEE_TABLE')).toBe(true);
   });
 
-  it('caps chairs at MAX_SEATS_PER_ROOM and keeps every chair on a labeled interior tile', () => {
+  it('caps desk seats at MAX_SEATS_PER_ROOM and keeps all furniture on interior tiles', () => {
     const { layout } = generateOfficeLayout([{ label: 'win-a', capacity: 99 }]);
-    const chairs = layout.furniture;
-    expect(chairs).toHaveLength(MAX_SEATS_PER_ROOM);
-    for (const chair of chairs) {
-      expect(layout.areaTiles[chair.row * layout.cols + chair.col]).toBe('win-a');
+    const benches = layout.furniture.filter((f) => f.type === 'CUSHIONED_BENCH');
+    expect(benches).toHaveLength(MAX_SEATS_PER_ROOM);
+    // No piece lands on a wall: every furniture origin sits on a labeled floor tile.
+    for (const item of layout.furniture) {
+      expect(layout.areaTiles[item.row * layout.cols + item.col]).toBe('win-a');
     }
   });
 
