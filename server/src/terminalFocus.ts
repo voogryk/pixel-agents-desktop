@@ -31,7 +31,9 @@ const execFileAsync = promisify(execFile);
 /** Subprocess runner shape; the default wraps child_process.execFile. */
 export type ExecRunner = (cmd: string, args: string[]) => Promise<{ stdout: string }>;
 
-const defaultExec: ExecRunner = async (cmd, args) => {
+/** Default subprocess runner (child_process.execFile). Shared with the topology
+ *  module so both spawn the same bounded way. */
+export const defaultExec: ExecRunner = async (cmd, args) => {
   const { stdout } = await execFileAsync(cmd, args, { timeout: 5000, maxBuffer: 4 * 1024 * 1024 });
   return { stdout };
 };
