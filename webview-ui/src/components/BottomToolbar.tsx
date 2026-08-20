@@ -120,13 +120,18 @@ export function BottomToolbar({
           </Dropdown>
         </div>
       )}
-      <Button
-        variant={isEditMode ? 'active' : 'default'}
-        onClick={onToggleEditMode}
-        title="Edit office layout"
-      >
-        Layout
-      </Button>
+      {/* Standalone generates the office from the live iTerm2 windows, so manual
+          layout editing is hidden there — a hand-drawn layout would just be
+          overwritten by the next room scan. VS Code keeps the editor. */}
+      {!isBrowserRuntime && (
+        <Button
+          variant={isEditMode ? 'active' : 'default'}
+          onClick={onToggleEditMode}
+          title="Edit office layout"
+        >
+          Layout
+        </Button>
+      )}
       <Button
         variant={isSettingsOpen ? 'active' : 'default'}
         onClick={onToggleSettings}
