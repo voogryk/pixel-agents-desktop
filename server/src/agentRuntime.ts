@@ -14,7 +14,7 @@ import * as path from 'path';
 
 import type { HookProvider } from '../../core/src/provider.js';
 import type { AgentStateStore } from './agentStateStore.js';
-import { DEFAULT_MAX_CONTEXT_TOKENS } from './constants.js';
+import { DEFAULT_MAX_CONTEXT_TOKENS, REGISTRY_SCAN_INTERVAL_MS } from './constants.js';
 import { DismissalTracker } from './dismissalTracker.js';
 import {
   adoptExternalSessionFromHook,
@@ -40,6 +40,11 @@ import { assignPaletteIfNeeded } from './paletteAssigner.js';
 import { PathSet, pathsMatch } from './pathKey.js';
 import { SessionRouter } from './sessionRouter.js';
 import { SubagentWatch } from './subagentWatch.js';
+import {
+  listLiveSessions,
+  type LiveSessionsDeps,
+  transcriptPathForSession,
+} from './terminalFocus.js';
 import { cancelPermissionTimer, cancelWaitingTimer } from './timerManager.js';
 import {
   setBackgroundAgentCompletedCallback,
@@ -73,6 +78,11 @@ export class AgentRuntime {
   readonly activeAgentId = { current: null as number | null };
   private externalScanTimer: ReturnType<typeof setInterval> | null = null;
   private staleCheckTimer: ReturnType<typeof setInterval> | null = null;
+  private registryScanTimer: ReturnType<typeof setInterval> | null = null;
+  /** sessionId → agentId for agents this runtime adopted from the live-process
+   *  registry. Only these are removed when their pid leaves the registry; agents
+   *  adopted by hooks or the workspace scanner are left to their own lifecycles. */
+  private readonly registrySessions = new Map<string, number>();
 
   // Configuration refs (mutable, shared with scanners)
   readonly watchAllSessions = { current: false };
@@ -449,6 +459,87 @@ export class AgentRuntime {
     );
   }
 
+  // ── Live-process registry scanning (standalone) ──
+  //
+  // The workspace + global scanners adopt a session only while its transcript
+  // is recently modified (GLOBAL_SCAN_ACTIVE_MAX_AGE_MS), so an idle Claude
+  // sitting untouched for 20 minutes has no character. This scanner instead
+  // treats "the OS process is alive" as the liveness signal: it reads the
+  // per-pid registry (~/.claude/sessions/), adopts every live session across
+  // every project regardless of transcript mtime, labels each character with the
+  // session's own name, and removes the character when the pid leaves.
+
+  /** Deps for the registry read (test injection: fixture dir + fake liveness +
+   *  fixture home for transcript paths). */
+  private registryScanDeps: LiveSessionsDeps & { homeDir?: string } = {};
+
+  setRegistryScanDeps(deps: LiveSessionsDeps & { homeDir?: string }): void {
+    this.registryScanDeps = deps;
+  }
+
+  /** Start periodic discovery of every live Claude process on the machine. */
+  startRegistryScanning(): void {
+    if (this.registryScanTimer) return;
+    // Prime immediately so the office is populated on connect, not one tick late.
+    this.scanRegistryOnce();
+    this.registryScanTimer = setInterval(() => this.scanRegistryOnce(), REGISTRY_SCAN_INTERVAL_MS);
+  }
+
+  /** One registry pass: adopt appeared sessions, drop vanished ones. Exposed for
+   *  tests so a pass can be driven deterministically without the timer. */
+  scanRegistryOnce(): void {
+    const live = listLiveSessions(this.registryScanDeps);
+    const liveIds = new Set(live.map((s) => s.sessionId));
+
+    for (const session of live) {
+      if (this.findAgentIdBySession(session.sessionId) !== null) continue;
+      if (!session.cwd) continue;
+      const transcript = transcriptPathForSession(
+        session.cwd,
+        session.sessionId,
+        this.registryScanDeps.homeDir,
+      );
+      // A just-started session may have no transcript yet — adopt it next tick.
+      if (!fs.existsSync(transcript)) continue;
+
+      adoptExternalSessionFromHook(
+        session.sessionId,
+        transcript,
+        session.cwd,
+        this.knownJsonlFiles,
+        this.store.nextAgentId,
+        this.store,
+        this.fileWatchers,
+        this.pollingTimers,
+        this.waitingTimers,
+        this.permissionTimers,
+        () => this.store.persist(),
+        undefined,
+        session.name,
+      );
+
+      const adoptedId = this.findAgentIdBySession(session.sessionId);
+      if (adoptedId !== null) this.registrySessions.set(session.sessionId, adoptedId);
+    }
+
+    // Reap: a tracked session whose pid is gone (or whose agent was already
+    // removed elsewhere) leaves the office and our map.
+    for (const [sessionId, agentId] of [...this.registrySessions]) {
+      const alive = liveIds.has(sessionId) && this.store.get(agentId) !== undefined;
+      if (alive) continue;
+      if (this.store.get(agentId) !== undefined) this.removeAgent(agentId);
+      this.registrySessions.delete(sessionId);
+    }
+  }
+
+  /** Agent id whose session matches, or null. */
+  private findAgentIdBySession(sessionId: string): number | null {
+    for (const [id, agent] of this.store) {
+      if (agent.sessionId === sessionId) return id;
+    }
+    return null;
+  }
+
   // ── Restore persisted external agents (standalone) ──
 
   /**
@@ -573,6 +664,11 @@ export class AgentRuntime {
       clearInterval(this.staleCheckTimer);
       this.staleCheckTimer = null;
     }
+    if (this.registryScanTimer) {
+      clearInterval(this.registryScanTimer);
+      this.registryScanTimer = null;
+    }
+    this.registrySessions.clear();
 
     for (const id of [...this.store.keys()]) {
       this.removeAgent(id);

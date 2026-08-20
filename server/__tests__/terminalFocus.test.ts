@@ -8,9 +8,11 @@ import {
   focusAgentTerminal,
   focusITerm2ByTty,
   ITERM2_FOCUS_SCRIPT,
+  listLiveSessions,
   parseClaudeAgents,
   readSessionRegistry,
   resolvePidForSession,
+  transcriptPathForSession,
   ttyDevicePath,
 } from '../src/terminalFocus.js';
 
@@ -37,10 +39,16 @@ function fakeExec(answers: Record<string, (args: string[]) => string | Error>): 
 }
 
 describe('parseClaudeAgents', () => {
-  it('keeps pid + sessionId and ignores the rest', () => {
+  it('keeps pid, sessionId, cwd, name, status and ignores unknown fields', () => {
     expect(parseClaudeAgents(AGENTS_JSON)).toEqual([
-      { pid: 101, sessionId: 'sess-a' },
-      { pid: 202, sessionId: 'sess-b' },
+      { pid: 101, sessionId: 'sess-a', cwd: '/a', name: 'a-1', status: 'idle' },
+      { pid: 202, sessionId: 'sess-b', cwd: '/b', name: 'b-2', status: 'busy' },
+    ]);
+  });
+
+  it('leaves optional fields undefined when absent or wrong-typed', () => {
+    expect(parseClaudeAgents('[{"pid":1,"sessionId":"s","cwd":5}]')).toEqual([
+      { pid: 1, sessionId: 's', cwd: undefined, name: undefined, status: undefined },
     ]);
   });
 
@@ -48,6 +56,41 @@ describe('parseClaudeAgents', () => {
     expect(parseClaudeAgents('[{"pid":"x","sessionId":"s"},{"pid":5},null,7]')).toEqual([]);
     expect(parseClaudeAgents('not json')).toEqual([]);
     expect(parseClaudeAgents('{"pid":1,"sessionId":"s"}')).toEqual([]);
+  });
+});
+
+describe('listLiveSessions', () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pxl-live-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('returns registry entries whose pid is alive and filters out the dead', () => {
+    fs.writeFileSync(
+      path.join(dir, '101.json'),
+      JSON.stringify({ pid: 101, sessionId: 'sess-a', cwd: '/a', name: 'a-1' }),
+    );
+    fs.writeFileSync(
+      path.join(dir, '202.json'),
+      JSON.stringify({ pid: 202, sessionId: 'sess-b', cwd: '/b', name: 'b-2' }),
+    );
+    const live = listLiveSessions({ sessionRegistryDir: dir, isAlive: (pid) => pid === 101 });
+    expect(live).toEqual([
+      { pid: 101, sessionId: 'sess-a', cwd: '/a', name: 'a-1', status: undefined },
+    ]);
+  });
+});
+
+describe('transcriptPathForSession', () => {
+  it('follows Claude’s dashed-cwd convention under ~/.claude/projects', () => {
+    expect(transcriptPathForSession('/Users/x/Proj', 'sess-a', '/home/x')).toBe(
+      '/home/x/.claude/projects/-Users-x-Proj/sess-a.jsonl',
+    );
   });
 });
 

@@ -20,6 +20,9 @@ export const CLEAR_IDLE_THRESHOLD_MS = 2000;
 
 // ── External Session Detection ──────────────────────────────
 export const EXTERNAL_SCAN_INTERVAL_MS = 3000;
+/** How often the standalone runtime re-reads ~/.claude/sessions to discover
+ *  live Claude processes across every project (independent of transcript mtime). */
+export const REGISTRY_SCAN_INTERVAL_MS = 3000;
 /** Only adopt JSONL files modified within this window */
 export const EXTERNAL_ACTIVE_THRESHOLD_MS = 120_000; // 2 minutes
 /** Remove external agents after this much inactivity */

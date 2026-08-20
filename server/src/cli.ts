@@ -293,6 +293,11 @@ async function main(): Promise<void> {
       runtime.startStaleCheck();
     }
 
+    // Discover every live Claude process on the machine — across all projects,
+    // regardless of the launch cwd or transcript mtime — so idle sessions still
+    // get a character, each labeled with its own session name.
+    runtime.startRegistryScanning();
+
     // The URL the operator opens has to be REACHABLE (a wildcard bind address
     // is a bind target, not an address you can browse to — `--host 0.0.0.0`
     // used to print a dead `http://0.0.0.0:PORT`) and has to carry the token,

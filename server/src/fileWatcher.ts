@@ -1070,6 +1070,10 @@ export function adoptExternalSessionFromHook(
 
   persistAgents: () => void,
   onAgentCreated?: (agent: AgentState) => void,
+  /** When set, becomes the character's label verbatim instead of the resolved
+   *  workspace-folder / dashed-basename. The registry scanner passes the live
+   *  session's name here so the office shows "medivet-c6", not the cwd. */
+  folderNameOverride?: string,
 ): void {
   if (transcriptPath) {
     // File-based provider (Claude, Codex): adopt with JSONL file watching
@@ -1085,6 +1089,7 @@ export function adoptExternalSessionFromHook(
     knownJsonlFiles.add(transcriptPath);
     const projectDir = path.dirname(transcriptPath);
     const folderName =
+      folderNameOverride ??
       folderNameResolver?.({ cwd, projectDir }) ??
       folderNameFromProjectDir(path.basename(projectDir));
 

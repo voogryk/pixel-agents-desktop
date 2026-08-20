@@ -93,6 +93,8 @@ npx pixel-agents
 
 The CLI chooses a free local port and prints the URL. Standalone does not launch Claude for you; start Claude Code in a terminal for the same workspace. To install the command globally instead:
 
+Every live Claude Code process on the machine gets a character, across all projects — not just the launch workspace, and regardless of how long a session has been idle. Discovery reads the per-pid registry under `~/.claude/sessions/` (no `claude` on PATH required, nothing spawned), so a character appears while its process is alive and leaves when the process exits. Each character is labeled with its session name (`medivet-c6`, `kt-pr-review`, …); two processes sharing one session id collapse to a single character. This makes the "Watch All Sessions" setting unnecessary for cross-project visibility — it still governs the older transcript-mtime scanner.
+
 ```bash
 npm install --global pixel-agents
 pixel-agents

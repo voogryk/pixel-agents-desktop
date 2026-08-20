@@ -24,6 +24,8 @@ import * as os from 'os';
 import * as path from 'path';
 import { promisify } from 'util';
 
+import { normalizeProjectPath } from '../../core/src/normalizeProjectPath.js';
+
 const execFileAsync = promisify(execFile);
 
 /** Subprocess runner shape; the default wraps child_process.execFile. */
@@ -34,10 +36,19 @@ const defaultExec: ExecRunner = async (cmd, args) => {
   return { stdout };
 };
 
-/** One live Claude Code process as reported by `claude agents --json`. */
+/** One live Claude Code process, as reported by `claude agents --json` and by
+ *  the per-pid registry files under ~/.claude/sessions/. `cwd`/`name`/`status`
+ *  are present in the registry files (and the CLI output) but optional here so a
+ *  caller that only needs pid→session mapping still type-checks. */
 export interface ClaudeAgentEntry {
   pid: number;
   sessionId: string;
+  /** Working directory the session was started in. Maps to its transcript dir. */
+  cwd?: string;
+  /** User/derived session name (e.g. "medivet-c6", "kt-pr-review"). */
+  name?: string;
+  /** Coarse activity as of the last registry write ("busy" | "idle" | …). */
+  status?: string;
 }
 
 export type FocusFailure = 'unsupported-platform' | 'no-pid' | 'no-tty' | 'not-found' | 'error';
@@ -67,9 +78,21 @@ export function parseClaudeAgents(json: string): ClaudeAgentEntry[] {
   const out: ClaudeAgentEntry[] = [];
   for (const item of parsed) {
     if (!item || typeof item !== 'object') continue;
-    const { pid, sessionId } = item as { pid?: unknown; sessionId?: unknown };
+    const { pid, sessionId, cwd, name, status } = item as {
+      pid?: unknown;
+      sessionId?: unknown;
+      cwd?: unknown;
+      name?: unknown;
+      status?: unknown;
+    };
     if (typeof pid === 'number' && Number.isInteger(pid) && typeof sessionId === 'string') {
-      out.push({ pid, sessionId });
+      out.push({
+        pid,
+        sessionId,
+        cwd: typeof cwd === 'string' ? cwd : undefined,
+        name: typeof name === 'string' ? name : undefined,
+        status: typeof status === 'string' ? status : undefined,
+      });
     }
   }
   return out;
@@ -101,6 +124,49 @@ export function readSessionRegistry(dir = defaultSessionRegistryDir()): ClaudeAg
     }
   }
   return out;
+}
+
+/** True if a process with this pid is alive. `kill(pid, 0)` sends no signal, it
+ *  only probes: it throws ESRCH when the pid is gone and EPERM when the pid
+ *  exists but we may not signal it — EPERM still means "alive", so only ESRCH
+ *  counts as dead. Lets the scanner drop a stale `<pid>.json` a crashed session
+ *  never cleaned up. */
+export function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+export interface LiveSessionsDeps {
+  /** Override for ~/.claude/sessions (tests). */
+  sessionRegistryDir?: string;
+  /** Liveness probe; defaults to isPidAlive. Injected in tests. */
+  isAlive?: (pid: number) => boolean;
+}
+
+/**
+ * All live Claude Code sessions on this machine, read straight from the per-pid
+ * registry under ~/.claude/sessions/. Deliberately does NOT shell out to
+ * `claude` — the registry files already carry pid/sessionId/cwd/name/status, so
+ * discovery has no PATH dependency and spawns nothing. Entries whose pid is no
+ * longer alive are dropped (a crashed session can leave its file behind).
+ */
+export function listLiveSessions(deps: LiveSessionsDeps = {}): ClaudeAgentEntry[] {
+  const isAlive = deps.isAlive ?? isPidAlive;
+  return readSessionRegistry(deps.sessionRegistryDir).filter((e) => isAlive(e.pid));
+}
+
+/** Absolute path of a session's transcript, following Claude's convention
+ *  ~/.claude/projects/<cwd-with-non-alnum-dashed>/<sessionId>.jsonl. */
+export function transcriptPathForSession(
+  cwd: string,
+  sessionId: string,
+  homeDir = os.homedir(),
+): string {
+  return path.join(homeDir, '.claude', 'projects', normalizeProjectPath(cwd), `${sessionId}.jsonl`);
 }
 
 /** Resolve the OS pid of the Claude Code process that owns `sessionId`, or null. */
