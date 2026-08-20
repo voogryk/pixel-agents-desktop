@@ -603,3 +603,67 @@ describe('clientMessageHandler: saveAgentSeats palette sync', () => {
     expect(store.get(1)?.palette).toBe(7);
   });
 });
+
+/**
+ * focusAgent in standalone: the webview already sends it on every character
+ * click (the VS Code adapter answers with terminal.show()). Here the handler
+ * delegates to ctx.onFocusAgent with the agent's session id — and only for the
+ * tokened connection, since the default implementation raises windows on the
+ * operator's desktop.
+ */
+describe('clientMessageHandler: focusAgent', () => {
+  let tempHome: string;
+  let originalHome: string | undefined;
+  let store: AgentStateStore;
+  let focused: string[];
+  let ctx: ClientMessageContext;
+
+  beforeEach(() => {
+    tempHome = fs.mkdtempSync(path.join(os.tmpdir(), 'pxl-cmh-focus-'));
+    originalHome = process.env.HOME;
+    process.env.HOME = tempHome;
+
+    store = new AgentStateStore();
+    store.setAdapter(new FileStateAdapter({ namespace: 'standalone' }));
+    store.set(1, createTestAgent({ id: 1, sessionId: 'sess-1' }));
+    focused = [];
+    ctx = {
+      store,
+      cache: null,
+      privileged: true,
+      onFocusAgent: async (sessionId) => {
+        focused.push(sessionId);
+        return { ok: true };
+      },
+    };
+  });
+
+  afterEach(() => {
+    if (originalHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = originalHome;
+    }
+    store.dispose();
+    fs.rmSync(tempHome, { recursive: true, force: true });
+  });
+
+  it('asks the focus side effect to raise the clicked agent’s session', async () => {
+    handleClientMessage({ type: 'focusAgent', id: 1 }, () => {}, ctx);
+    await settle();
+    expect(focused).toEqual(['sess-1']);
+  });
+
+  it('ignores unknown agent ids', async () => {
+    handleClientMessage({ type: 'focusAgent', id: 99 }, () => {}, ctx);
+    await settle();
+    expect(focused).toEqual([]);
+  });
+
+  it('ignores the request entirely when the client is not privileged', async () => {
+    ctx.privileged = false;
+    handleClientMessage({ type: 'focusAgent', id: 1 }, () => {}, ctx);
+    await settle();
+    expect(focused).toEqual([]);
+  });
+});

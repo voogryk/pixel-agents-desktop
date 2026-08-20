@@ -112,6 +112,8 @@ Open the URL the CLI prints - it carries a `?token=` for this session. Any brows
 
 Treat that URL as a secret: the token is a bearer capability, not proof of being local. Whoever holds it can approve the hook install from anywhere the server is reachable — so don't paste the URL into a shared channel, and note that it also lands in your browser history and (unredacted) in the server's own request log.
 
+On macOS with iTerm2, clicking a character in the tokened session brings that agent's terminal tab to the front. The server maps the agent's Claude session id to a process (`claude agents --json`, falling back to `~/.claude/sessions/`), the process to its tty (`ps`), and the tty to an iTerm2 session via AppleScript — all local, nothing leaves the machine. The first click may prompt macOS to allow the terminal that runs the server to control iTerm2. Other terminals and platforms log a warning and do nothing.
+
 Pass `--no-terminal` to disable the embedded terminal — watch agents without launching or attaching to them from the browser.
 
 ### Running the extension and standalone together

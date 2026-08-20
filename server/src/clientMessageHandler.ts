@@ -17,6 +17,7 @@ import type { ConsentEffects } from './providers/hook/consentExecutor.js';
 import { applyConsentChoice } from './providers/hook/consentExecutor.js';
 import { hooksConsentRequest } from './providers/hook/consentGate.js';
 import { claudeProvider, hookProviderById, hookProviders } from './providers/index.js';
+import { focusAgentTerminal, type FocusResult } from './terminalFocus.js';
 
 type WsSend = (message: Record<string, unknown>) => void;
 
@@ -52,10 +53,14 @@ export interface ClientMessageContext {
   onSetHooksEnabled?: SetHooksEnabledSideEffect;
   /** Reload assets after an external-asset-directory change. Needs the dist root, known only to cli.ts. */
   onReloadAssets?: ReloadAssetsSideEffect;
+  /** Bring the terminal tab hosting a session to the front. Defaults to the
+   *  macOS/iTerm2 chain in terminalFocus.ts; tests inject a stub. */
+  onFocusAgent?: (sessionId: string) => Promise<FocusResult>;
   /**
    * Whether this client may send messages that reach OUTSIDE `~/.pixel-agents/`
-   * — today only `setHooksEnabled`, which grants machine-wide consent to modify
-   * `~/.claude/settings.json`. Decided per-connection by the transport
+   * — `setHooksEnabled`, which grants machine-wide consent to modify
+   * `~/.claude/settings.json`, and `focusAgent`, which raises terminal windows
+   * on the operator's desktop. Decided per-connection by the transport
    * (httpServer's standaloneTokenValid, or the embedded Bearer token); defaults
    * to false so a caller that forgets to pass it gets the safe answer.
    */
@@ -270,8 +275,33 @@ export function handleClientMessage(
       break;
     }
 
+    case 'focusAgent': {
+      // No terminal handle to `.show()` here, so jump to the tab that hosts the
+      // session instead (macOS + iTerm2 for now, see terminalFocus.ts). Gated
+      // like setHooksEnabled: raising windows on the operator's desktop is the
+      // operator's call, so only the tokened connection gets to do it.
+      if (!ctx.privileged) {
+        console.warn(
+          '[Pixel Agents] Ignoring focusAgent from an untokened client — open the tokened URL the CLI printed to jump to terminals.',
+        );
+        break;
+      }
+      const agent = store.get(msg.id as number);
+      if (!agent?.sessionId) break;
+      const focus = ctx.onFocusAgent ?? focusAgentTerminal;
+      void focus(agent.sessionId).then((result) => {
+        if (!result.ok) {
+          const detail = result.detail ? ` (${result.detail})` : '';
+          console.warn(
+            `[Pixel Agents] Could not focus terminal for agent ${agent.id}: ${result.reason}${detail}`,
+          );
+        }
+      });
+      break;
+    }
+
     default:
-      // focusAgent, exportLayout, importLayout
+      // exportLayout, importLayout
       // require IDE-specific handling (not yet implemented for standalone)
       break;
   }
